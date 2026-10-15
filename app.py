@@ -3,6 +3,22 @@ import numpy as np
 import streamlit as st
 import pydeck as pdk
 
+
+# ============================================================
+# CONFIGURATION DE LA PAGE
+# ============================================================
+
+st.set_page_config(
+    page_title="Priorisation de la maintenance",
+    page_icon="🏢",
+    layout="wide"
+)
+
+
+# ============================================================
+# STYLE
+# ============================================================
+
 st.markdown("""
 <style>
 /* Fond général */
@@ -106,6 +122,7 @@ table.loc[table["Install Year"] == 0, "Install Year"] = np.nan
 CURRENT_YEAR = 2008
 CURRENT_MONTH = 12
 
+
 # ============================================================
 # DURÉE DE VIE OBSERVÉE
 # ============================================================
@@ -153,7 +170,7 @@ stats_equipment = stats_equipment[
     stats_equipment["count"] >= 10
 ]
 
-dict_Equipment = stats_equipment["median"].to_dict()
+dict_equipment = stats_equipment["median"].to_dict()
 
 
 stats_system = (
@@ -166,7 +183,7 @@ stats_system = stats_system[
     stats_system["count"] >= 10
 ]
 
-dict_System = stats_system["median"].to_dict()
+dict_system = stats_system["median"].to_dict()
 
 
 # ============================================================
@@ -174,29 +191,55 @@ dict_System = stats_system["median"].to_dict()
 # ============================================================
 
 def calcul_temps_restant(row):
+    """Estime le nombre de mois restant avant la durée de vie de référence."""
 
     if pd.isna(row["Age"]):
         return np.nan
 
-    # Priorité au type d'équipement
-    if row["Equipment Type"] in dict_Equipment:
-        return dict_Equipment[row["Equipment Type"]] - row["Age"]
+    # Priorité au type d'équipement lorsque l'historique est suffisant
+    if row["Equipment Type"] in dict_equipment:
+        return dict_equipment[row["Equipment Type"]] - row["Age"]
 
-    # Sinon fallback sur le système
-    elif row["System Type"] in dict_System:
-        return dict_System[row["System Type"]] - row["Age"]
+    # Fallback sur le système
+    if row["System Type"] in dict_system:
+        return dict_system[row["System Type"]] - row["Age"]
 
     return np.nan
 
 
-table["Duree de vie"] = table.apply(
+table["Durée restante estimée"] = table.apply(
     calcul_temps_restant,
     axis=1
 )
 
 
 # ============================================================
-# LOCALISATION DES BÂTIMENTS
+# NIVEAU DE PRIORITÉ
+# ============================================================
+
+def get_priority(remaining_months):
+    """Transforme la durée restante estimée en niveau de priorité."""
+
+    if pd.isna(remaining_months):
+        return "Non évalué"
+
+    if remaining_months < 0:
+        return "Dépassement"
+
+    if remaining_months < 24:
+        return "Prioritaire"
+
+    if remaining_months < 60:
+        return "Surveillance"
+
+    return "Faible"
+
+
+table["Priorité"] = table["Durée restante estimée"].apply(get_priority)
+
+
+# ============================================================
+# LOCALISATION SIMULÉE DES BÂTIMENTS
 # ============================================================
 
 cities = {
@@ -232,8 +275,7 @@ cities = {
     "Le Mans": (48.0061, 0.1996),
 }
 
-
-# Une ville par Building ID
+# Une ville simulée par Building ID
 building_ids = table["Building ID"].dropna().unique()
 city_names = list(cities.keys())
 
@@ -248,8 +290,6 @@ for i, building_id in enumerate(building_ids):
         "Longitude": cities[city][1]
     }
 
-
-# On crée bien les colonnes Latitude / Longitude
 table["City"] = table["Building ID"].map(
     lambda x: building_location.get(x, {}).get("City")
 )
@@ -264,7 +304,7 @@ table["Longitude"] = table["Building ID"].map(
 
 
 # ============================================================
-# PETIT DÉCALAGE POUR ÉVITER QUE LES BÂTIMENTS SE SUPERPOSENT
+# DÉCALAGE VISUEL POUR ÉVITER LES SUPERPOSITIONS
 # ============================================================
 
 np.random.seed(42)
@@ -278,57 +318,66 @@ table["Longitude"] += np.random.uniform(
 )
 
 
-
-def get_gravity(remaining_months):
-
-    if remaining_months < 0:
-        return "Dépassement"
-
-    elif remaining_months < 24:
-        return "Prioritaire"
-
-    elif remaining_months < 60:
-        return "Surveillance"
-
-    else:
-        return "Faible"
-
-
-table["Gravité"] = table["Duree de vie"].apply(get_gravity)
-
-
-
-
-
-
+# ============================================================
+# COULEURS DE LA CARTE
+# ============================================================
 
 colors = {
     "Faible": [50, 180, 80],
     "Surveillance": [255, 180, 0],
     "Prioritaire": [240, 80, 60],
     "Dépassement": [100, 30, 30],
+    "Non évalué": [140, 140, 140],
 }
 
-table["Color"] = table["Gravité"].map(colors)
+table["Color"] = table["Priorité"].map(colors)
 
 
+# ============================================================
+# EN-TÊTE
+# ============================================================
 
-st.set_page_config(
-    page_title="Maintenance prédictive",
-    page_icon="🏢",
-    layout="wide"
-)
-
-st.title("Prototype de maintenance prédictive du parc immobilier")
+st.title("Priorisation de la maintenance d'un parc immobilier")
 
 st.caption(
-    "Analyse de maturité des équipements et identification "
-    "des bâtiments nécessitant une attention prioritaire."
+    "Analyse de la maturité des équipements à partir de durées de vie "
+    "historiques afin d'identifier les actifs nécessitant une attention prioritaire."
 )
 
 st.info(
     "Les localisations sont simulées pour les besoins de la démonstration."
 )
+
+
+# ============================================================
+# MÉTHODOLOGIE
+# ============================================================
+
+with st.expander("Comment est calculé le niveau de priorité ?"):
+    st.markdown("""
+    Pour chaque équipement encore en service :
+
+    1. **L'âge de l'équipement** est calculé à partir de sa date d'installation.
+    2. Une **durée de vie de référence** est estimée à partir de la médiane
+       des durées observées historiquement.
+    3. L'estimation est réalisée au niveau du **type d'équipement** lorsqu'au
+       moins 10 observations historiques sont disponibles.
+    4. Lorsque ce niveau de détail n'est pas suffisamment documenté,
+       une estimation au niveau du **système** est utilisée.
+    5. L'écart entre la durée de vie de référence et l'âge de l'équipement
+       permet d'estimer une durée restante et d'attribuer un niveau de priorité.
+
+    **Seuils utilisés :**
+
+    - **Dépassement** : durée restante estimée inférieure à 0 mois
+    - **Prioritaire** : moins de 24 mois
+    - **Surveillance** : de 24 à moins de 60 mois
+    - **Faible** : 60 mois ou plus
+    - **Non évalué** : historique insuffisant pour produire une estimation
+
+    Cet indicateur constitue une **aide exploratoire à la priorisation**.
+    Il ne correspond pas à une prédiction de panne.
+    """)
 
 
 # ============================================================
@@ -338,7 +387,6 @@ st.info(
 col1, col2, col3 = st.columns(3)
 
 with col1:
-
     equipment_filter = st.multiselect(
         "Type d'équipement",
         sorted(
@@ -349,7 +397,6 @@ with col1:
     )
 
 with col2:
-
     system_filter = st.multiselect(
         "Système",
         sorted(
@@ -360,14 +407,14 @@ with col2:
     )
 
 with col3:
-
-    gravity_filter = st.multiselect(
+    priority_filter = st.multiselect(
         "Niveau de priorité",
         [
             "Dépassement",
             "Prioritaire",
             "Surveillance",
             "Faible",
+            "Non évalué",
         ]
     )
 
@@ -388,9 +435,9 @@ if system_filter:
         filtered["System Type"].isin(system_filter)
     ]
 
-if gravity_filter:
+if priority_filter:
     filtered = filtered[
-        filtered["Gravité"].isin(gravity_filter)
+        filtered["Priorité"].isin(priority_filter)
     ]
 
 
@@ -415,13 +462,13 @@ with col2:
 with col3:
     st.metric(
         "Prioritaires",
-        (filtered["Gravité"] == "Prioritaire").sum()
+        (filtered["Priorité"] == "Prioritaire").sum()
     )
 
 with col4:
     st.metric(
         "En dépassement",
-        (filtered["Gravité"] == "Dépassement").sum()
+        (filtered["Priorité"] == "Dépassement").sum()
     )
 
 
@@ -452,8 +499,8 @@ tooltip = {
         <b>Système :</b> {System Type}<br/>
         <b>Équipement :</b> {Equipment Type}<br/>
         <b>Âge :</b> {Age} mois<br/>
-        <b>Durée restante :</b> {Duree de vie} mois<br/>
-        <b>Priorité :</b> {Gravité}
+        <b>Durée restante estimée :</b> {Durée restante estimée} mois<br/>
+        <b>Priorité :</b> {Priorité}
     """,
     "style": {
         "backgroundColor": "steelblue",
@@ -479,16 +526,36 @@ st.pydeck_chart(
     use_container_width=True
 )
 
-st.markdown("""### Données et limites
 
-Les données utilisées dans ce prototype proviennent de la ASHRAE Service Life and Maintenance Cost Database**, une base publique regroupant des informations historiques sur la durée de vie de différents équipements HVAC et systèmes techniques des bâtiments.
+# ============================================================
+# DONNÉES ET LIMITES
+# ============================================================
 
-Source : ASHRAE – HVAC Service Life Database - https://costdatabase.ashrae.org/service_life.asp
+st.markdown("""
+### Données et limites
 
-L'objectif de ce projet n'est pas de construire un modèle de prédiction de panne industriel ou directement exploitable en production. Les données disponibles étant principalement historiques et ne contenant pas l'ensemble des variables nécessaires à une prédiction fiable de défaillance, les estimations proposées constituent avant tout un indicateur simplifié de maturité des équipements et d'aide à la priorisation de la maintenance.
+Les données utilisées dans ce prototype proviennent de la
+**ASHRAE Service Life and Maintenance Cost Database**, une base regroupant
+des informations historiques sur la durée de vie de différents équipements
+HVAC et systèmes techniques des bâtiments.
 
-La durée de vie de référence est estimée à partir des durées de vie historiques observées pour les différents types d'équipements. Lorsque le nombre d'observations est insuffisant à ce niveau de détail, une estimation au niveau du système est utilisée. Les résultats doivent donc être interprétés comme des ordres de grandeur, et non comme une date prévisionnelle de remplacement.
+Source officielle :
+https://costdatabase.ashrae.org/service_life.asp
 
-Les localisations des bâtiments présentées sur la carte sont également simulées afin de permettre la visualisation d'un parc immobilier en France ; elles ne correspondent pas aux localisations réelles des bâtiments présents dans la base ASHRAE.
+L'indicateur présenté dans cette application repose sur les durées de vie
+historiques observées. Il ne constitue pas une prédiction de panne ni une
+estimation de la date exacte de remplacement d'un équipement.
 
-Ce prototype a été réalisé dans une logique d'exploration : l'objectif était notamment de mettre en pratique le sujet de la maintenance prédictive appliquée à un parc immobilier, d'identifier les données nécessaires à ce type de problématique et de traduire les résultats en un outil simple d'aide à la décision. Il s'agit donc volontairement d'une première esquisse, destinée à illustrer une démarche et une compréhension du problème plutôt qu'à proposer une solution définitive.""")
+La durée de vie de référence est estimée à partir de la médiane des durées
+observées pour les différents types d'équipements. Lorsque le nombre
+d'observations est insuffisant à ce niveau de détail, une estimation au niveau
+du système est utilisée. Lorsqu'aucune estimation suffisamment documentée
+n'est disponible, l'équipement est classé comme **Non évalué**.
+
+Les résultats doivent donc être interprétés comme des **ordres de grandeur
+destinés à faciliter la priorisation de la maintenance**.
+
+Les localisations présentées sur la carte sont simulées afin de permettre la
+visualisation d'un parc immobilier en France. Elles ne correspondent pas aux
+localisations réelles des bâtiments présents dans la base ASHRAE.
+""")
